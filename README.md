@@ -9,16 +9,64 @@
 [![License](https://img.shields.io/github/license/rudr19/okproof.svg)](LICENSE)
 
 > Browser agents act. Test frameworks run. CI reports. **okproof proves.**
-> [Why okproof](WHY-OKPROOF.md) · [Vision](VISION.md) · [Roadmap](ROADMAP.md) · [Governance](GOVERNANCE.md) · [Security](SECURITY.md)
+> [Why okproof](WHY.md) · [Project](#project) · [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md)
 
-okproof checks a pull request against the acceptance criteria in its issue.
-The criteria go in a proof file in the repo. Tests claim criteria by tag. The
-run ends with a ledger that marks each criterion **met**, **failed** or
-**untested**. Untested never counts as a pass, and neither does a flaky pass.
+"Proves" is the promise; here is exactly what is checked. okproof compares a
+pull request with the acceptance criteria in its issue. The criteria go in a
+proof file in the repo. Tests claim criteria by tag. The run ends with a ledger
+that marks each criterion **met**, **failed**, **unproven** or **untested**. A
+criterion is met only when a test tagged to it passed and made a real assertion.
+Untested, flaky and assertion-less tests never count. If you run the optional
+verifier, a bug it finds counts only when it reproduces on a model-free replay.
+okproof does not judge whether a test is a *good* test, and ledgers are not
+signed (see [Project](#project)).
 
 okproof doesn't run your tests. It works with **Playwright Test** directly, and
 with **any runner that writes JUnit XML**: Jest, Vitest, pytest, JUnit,
 Cypress, Go and more. It has no runtime dependencies.
+
+## Quick start (30 seconds)
+
+```bash
+npx okproof init --agents --workflow --runner playwright
+```
+
+That one command, in your repo:
+
+- creates `.okproof/` with an example proof file (use `--issue 142 --title "Pro upgrade"` for a real one);
+- writes `.github/workflows/okproof.yml`: it runs your tests with a JUnit reporter, then `rudr19/okproof@v0` ingests the results and gates the merge (`--runner` is one of `playwright`, `junit`, `ctrf`, `vitest`, `jest`, `pytest`);
+- teaches coding agents the loop: it adds an okproof section to `AGENTS.md` and `CLAUDE.md`, copies the skill to `.claude/skills/okproof/SKILL.md`, and adds the okproof server to `.mcp.json` without touching your other servers.
+
+Then edit the proof file, tag your tests with `[okproof:<id>]`, and push. The
+pull request gets one okproof comment, and the check fails until every criterion
+is met. `init` never overwrites a file; it prints what it skipped. Run it again
+and nothing changes.
+
+## How okproof thinks
+
+okproof is an auditor that tries to **disprove** "done", not to confirm it.
+"Done" stands only if the audit fails to knock it down. The principles (more in
+[WHY.md](WHY.md)):
+
+1. **The criterion is the unit, not the test.** Verdicts are per acceptance criterion.
+2. **Silence counts against you.** Untested, flaky, assertion-less or untagged tests are not met.
+3. **The auditor is never the author.** An independent verifier attacks; only model-free replay-confirmed bugs count.
+4. **Graded evidence, not pass/fail.** Planned Evidence Levels: E0 claimed, E1 tagged test passed, E2 real relevant assertion, E3 survived adversarial attack (partly shipped), E4 verified in CI from the base branch with a signed ledger (roadmap, not built).
+5. **Neutral across vendors.** It audits runs from any agent or runner through open JUnit and CTRF formats.
+
+## Works with
+
+Write JUnit XML (or CTRF JSON), then `npx okproof ingest <file>`.
+
+| Runner | Reporter flag | Then |
+| --- | --- | --- |
+| Playwright | `npx playwright test --reporter=junit` (set `PLAYWRIGHT_JUNIT_OUTPUT_NAME=junit.xml`) | `npx okproof ingest junit.xml` |
+| Vitest | `npx vitest run --reporter=junit --outputFile=junit.xml` | `npx okproof ingest junit.xml` |
+| Jest | `npx jest --reporters=default --reporters=jest-junit` (needs `jest-junit`) | `npx okproof ingest junit.xml` |
+| pytest | `python -m pytest --junitxml=junit.xml` | `npx okproof ingest junit.xml` |
+| Cypress | `npx cypress run --reporter junit --reporter-options mochaFile=junit.xml` | `npx okproof ingest junit.xml` |
+| Go | `gotestsum --junitfile junit.xml ./...` (needs gotestsum) | `npx okproof ingest junit.xml` |
+| Anything with CTRF | a CTRF reporter writing `ctrf-report.json` | `npx okproof ingest ctrf-report.json` |
 
 ## Install
 
@@ -72,6 +120,9 @@ test('member upgrades to Pro [okproof:142.1] [okproof:142.2]', async ({ page }) 
 });
 ```
 
+Ids are positional by default. To keep a tag valid when criteria are reordered,
+give a criterion a stable id with a `{#id}` prefix; see [docs/stable-ids.md](docs/stable-ids.md).
+
 ## 3. Build the ledger
 
 **Playwright Test**: add the reporter.
@@ -112,9 +163,35 @@ that reruns update. Give the job `pull-requests: write`, or pass
 ## 4. Gate the merge
 
 `npx okproof gate` exits 1 unless every criterion is met. Make it a required
-check.
+check. The gate re-reads the proof files, so a stale ledger, a missing ledger or
+stale verifier results fail it; the Action's `proven` output, the PR comment and
+the MCP `okproof_status` verdict all use the same function.
 
-## Weak tests
+A committed ledger is only a claim, so in CI gate from the job's own results:
+`npx okproof gate --results junit.xml --require-issues 142,143` rebuilds the
+ledgers in memory and ignores committed ones (the Action does this when its
+`results` input is set). Do not commit `.okproof/ledger-*`. See
+[docs/trust.md](docs/trust.md).
+
+### Protect `.okproof/` with CODEOWNERS
+
+Nothing in okproof stops an agent (or anyone with write access) from editing a
+proof file to weaken a criterion. Make that a reviewed change: add a
+`CODEOWNERS` entry for the folder and turn on required code-owner review.
+
+```
+# .github/CODEOWNERS
+/.okproof/ @your-org/reviewers
+```
+
+Then in the repository settings (Branch protection or a ruleset for your
+default branch) enable "Require a pull request before merging" and "Require
+review from Code Owners", and make the okproof gate a required status check. A
+pull request that touches `.okproof/*.md` now needs a human owner's approval, so
+criteria cannot be silently removed or reworded by the author of the change.
+Use a team or a person who is not the agent's account.
+
+## Weak and unrelated tests
 
 A tag is a claim; an assertion is evidence. A tagged test that passes but makes
 zero assertions proves nothing, so okproof will not call its criterion met.
@@ -135,7 +212,7 @@ or `strictAssertions: true` to the reporter, to treat unknown as weak.
 How each runner reports counts:
 
 - **Playwright reporter**: counts `expect` steps in the result's step tree, nested ones and `expect.soft` included. A result with no step list is unknown.
-- **JUnit**: the `assertions="N"` attribute on `<testcase>` (PHPUnit style). Absent means unknown.
+- **JUnit**: the `assertions="N"` attribute on `<testcase>` (PHPUnit style). Absent means unknown. A testcase that passed only after a retry is `flaky`, so never met: `<flakyFailure>`/`<flakyError>` (Maven Surefire), `<rerunFailure>`/`<rerunError>`, or a `rerun`/`reruns`/`rerun_count` property that is not `0`.
 - **CTRF**: `extra.assertions` on a test, when it is a number. Otherwise unknown.
 
 A confirmed verifier refutation still makes a criterion `failed`.
@@ -146,12 +223,16 @@ A static check that needs no test run:
 
 ```bash
 npx okproof lint                       # scan the working directory
-npx okproof lint --tests e2e           # limit to a path, file or glob such as "e2e/**/*.spec.ts"
+npx okproof lint --tests tests/ui      # limit to a path, file or glob such as "tests/**/*.spec.ts"
 ```
 
 It finds tests whose title has `[okproof:<id>]` and reports the ones with no
 assertion in the body (`expect(`, `assert`, `.should(`, `t.Error`, `t.Fatal`,
-`require.`, `toBe`, `toEqual`, `toHave`, ...). It also reports tags naming a
+`require.`, `toBe`, `toEqual`, `toHave`, ...), or whose only assertions are
+trivial: `expect(true).toBe(true)`, `expect(1).toBe(1)`, `expect(true).toBeTruthy()`,
+`assert.ok(true)`, `assert.equal(1, 1)`, `assert True`, `assert 1 == 1`,
+`self.assertTrue(True)` and the like. One real assertion next to a trivial one
+is enough to pass this check. It also reports tags naming a
 criterion that no proof file lists, and criteria no tagged test claims. It
 exits 1 on a weak test or a dangling tag. Untested criteria are listed but do
 not fail the run. Also available as `lintTests()` and the `okproof_lint` MCP tool.
@@ -164,6 +245,59 @@ reads the indented block (Python). Put the tag in the test title. A test
 that only calls a helper which asserts is reported weak, and a tag in a comment
 above a test is not followed. Treat a hit as a prompt to look, not a verdict.
 The ledger counts from your runner are the authority.
+
+Some runners report no assertion counts at all (JUnit from `node --test`, for
+example), so a test with no assertion would be marked met. Feed lint into the
+ledger to close that gap:
+
+```bash
+npx okproof ingest junit.xml --lint            # scan every test file under the working directory
+npx okproof ingest junit.xml --lint tests/ui   # or a path or glob (`--lint=<path>` also works)
+npx okproof gate --results junit.xml --lint
+```
+
+A test lint finds weak (no assertion, or only trivial ones) is counted as having
+asserted nothing, so its criterion is `unproven`. Lint findings are matched to
+results by the `[okproof:<id>]` tag plus the test title. A count your runner
+does report stands, except for tests lint calls trivial. Relevance stays
+advisory unless you add `--strict-relevance`. After a bare `--lint`, a
+following word is read as the path; write `--lint=` to put the proof folder
+after it. `gate --lint` needs `--results`.
+
+#### Possibly unrelated tests
+
+A tag is a claim, and an agent optimising for a green gate can tag a test that
+checks something else. For every tagged test that does assert, lint compares the
+claimed criterion with the test body and reports:
+
+```
+possibly unrelated: test 'login works' claims 5.1 ('A user can reset their password by email') but never mentions password, email, reset
+```
+
+This is advisory: it prints warnings and exits 0. Add `--strict-relevance`
+(`strictRelevance: true` for `lintTests()` and the MCP tool) to make each one a
+failure (exit 1).
+
+How it works: the criterion is lowercased and split on non-letters, a small
+built-in stopword list and words shorter than 3 characters are dropped (so are
+"user"/"users", which start nearly every criterion), and simple stems are
+compared (`s`, `es`, `ed`, `ing`). The test body contributes its identifiers,
+split on camelCase and snake_case, and its string literals. The test's own title
+and (in Python) function name do not count, because they are the easiest thing to
+copy from the criterion. If **none** of the criterion's key words appear in the
+body, the test is reported. One shared word is enough to stay quiet.
+
+Known limits, so you can weigh a hit:
+
+- **Synonyms are out of scope.** A test that calls `changePass()` for "reset the password" is reported (false positive).
+- **Compound words** such as `signup` against "sign up" do not match.
+- **Helpers hide intent.** A test that only calls `runScenario()` mentions nothing; the words live in the helper.
+- **Page objects and fixtures** (`loginPage.submit()`) can carry the meaning outside the test body.
+- **False negatives are easy.** A test can mention the right words and still check nothing relevant; one shared word passes, and a common word in the criterion (such as "list") matches almost anything.
+- It checks wording, not behaviour. It cannot tell that a test is wrong, only that it never talks about the thing it claims.
+- Code identifiers such as `expect`, `test`, `page` and `assert` are ignored as body words, but the same words in a string literal count.
+
+Treat it as a prompt to open the test, not a verdict.
 
 ## Keep criteria in sync with the issue
 
@@ -219,7 +353,7 @@ jobs:
 Inputs: `results` (JUnit XML path, optional), `dir` (default `.okproof`),
 `gate` (default `true`, fail unless proven), `comment` (default `true`),
 `issue` (issue number to sync from; default: detected from the PR body),
-`sync` (`check` default, `write` or `off`), `node-version` (default `22`), `github-token` (default `${{ github.token }}`).
+`sync` (`check` default, `write` or `off`), `lint` (`auto` default scans your test files and marks assertion-less tests weak; a path or glob limits the scan; `off` disables it), `node-version` (default `22`), `github-token` (default `${{ github.token }}`).
 Outputs: `proven` (`true` or `false`) and `summary` (one line per proof file).
 Set `comment: false` to skip the PR comment and job summary (for forks, or
 when you only want the gate). The CLI honours the same switch as
@@ -271,7 +405,9 @@ npx okproof verify --url https://preview.example.com --issue 142
 ```
 
 Options: `--dir .okproof`, `--max-steps 15`, `--model claude-opus-5-5`,
-`--effort medium`. It writes:
+`--effort medium`. For an app behind a login use `--storage-state <file>`,
+`--header 'Name: value'` or `--login <script.mjs>`; `--strict-detectors` turns off
+per-detector attribution of findings (see [docs/trust.md](docs/trust.md)). It writes:
 
 - `.okproof/verify-<issue>.json`: a verdict per criterion (`refuted`, `held` or
   `inconclusive`), findings, and the recorded actions
@@ -297,7 +433,7 @@ criterion. Unnamed controls and overflow are severity 2: reported, not failing.
 `new AnthropicModel({ apiKey })` or `OKPROOF_ANTHROPIC_API_KEY`. It never falls
 back to `ANTHROPIC_API_KEY`, auth tokens or CLI profiles, so you choose which
 account pays. Without a key, `okproof verify` exits 2. `@anthropic-ai/sdk` is an
-optional peer dependency, loaded only when used: `npm i @anthropic-ai/sdk`. The
+optional peer dependency (`>=1.0.0 <2.0.0`), loaded only when used: `npm i @anthropic-ai/sdk`. The
 core stays dependency free, and any `ModelClient` works:
 
 ```ts
@@ -328,28 +464,75 @@ working directory):
 - `okproof_criteria` lists criteria and the `[okproof:<issue>.<n>]` tag for each test title.
 - `okproof_status` says "Done" or "Not done" and lists the unmet criteria. Call it before saying a task is finished.
 - `okproof_ingest_junit` builds ledgers from a JUnit XML report.
-- `okproof_lint` finds tagged tests with no assertion, dangling tags and untested criteria. `okproof_status` reports criteria whose tests passed without asserting as unproven and names the tests.
-- `okproof_add_criterion` appends a criterion. Agents can add criteria but not remove or edit them.
+- `okproof_lint` finds tagged tests with no assertion or only trivial ones, tests that never mention their criterion ("possibly unrelated", advisory; `strictRelevance` makes it fail), dangling tags and untested criteria. `okproof_status` reports criteria whose tests passed without asserting as unproven and names the tests.
+- `okproof_add_criterion` appends a criterion. Through this server agents can add criteria but not remove or edit them; that limit covers the MCP tools only, not direct file edits (see CODEOWNERS below).
 
 `skills/okproof/SKILL.md` is a Claude Code skill that tells agents to follow this
-loop. Copy it to `.claude/skills/okproof/SKILL.md`.
+loop. `okproof init --agents` copies it to `.claude/skills/okproof/SKILL.md`.
 
-## Roadmap
+`okproof init --agents` also appends this section (marked `<!-- okproof -->` so
+it is added once) to `AGENTS.md` and `CLAUDE.md`. You can paste it by hand:
 
-- [x] Proof files, ledger, merge gate
-- [x] Ledger posted as one PR comment (updated on reruns) and in the job summary
-- [x] Playwright Test reporter and JUnit ingest for any runner
-- [x] Own Chrome driver (DevTools Protocol, no dependencies)
-- [x] MCP server so coding agents check "done" through okproof
-- [x] CTRF ingest
-- [x] Verifier agent that attacks each criterion on the preview deployment
-- [x] Weak-test check: a tagged test that asserts nothing cannot make a criterion met
-- [ ] "Harden": commit passing verifier runs as tests linked to criteria
-- [ ] OIDC-signed ledgers on a hosted proof page
+```md
+<!-- okproof -->
+## okproof: definition of done
+
+This repo checks work against acceptance criteria in `.okproof/<issue>.md`.
+
+1. Read `.okproof/<issue>.md` before you start. Each criterion has an id such as `142.1`.
+2. Tag every test that covers a criterion with `[okproof:<id>]` in its title, for example
+   `test('member can upgrade [okproof:142.1]', ...)`.
+3. Run the tests, then `npx okproof ingest <results>` (JUnit XML or CTRF JSON) and
+   `npx okproof gate` (or call the MCP tool `okproof_status`). Keep working until it says proven.
+4. Never edit or remove existing criteria without telling the user exactly what you changed and why.
+5. Add a real assertion to every tagged test. Untested, flaky and assertion-less tests never count.
+```
+
+An agent with file access can still edit `.okproof/*.md`. To stop that, protect
+the folder with CODEOWNERS (for example `/.okproof/ @your-team`) and require
+review, so criteria cannot change without a person approving.
+
+## Project
+
+**Status.** Shipped: proof files, ledger, merge gate, PR comment, Playwright
+reporter, JUnit and CTRF ingest, weak-test check, `lint`, issue sync, MCP server,
+`init`, own Chrome driver, and the verifier with model-free replay. The
+verifier's Anthropic adapter is tested against a fake client only, not the live
+API.
+
+**Roadmap.** Ordered by priority; dates are intentions, not promises. Open an
+issue to argue for a change.
+
+- Next: more runner coverage and flaky detection in JUnit.
+- Later, **not built yet**: **Revert check** (temporarily undo the PR's code
+  change and re-run the tagged tests; if they still pass, the test doesn't cover
+  the change), "Harden" (commit passing verifier runs as tests
+  linked to criteria), **signed ledgers** (GitHub OIDC), a **hosted proof page**
+  with history, and Firefox and WebKit in the driver.
+
+**Non-goals.** Replacing your test runner or browser library, a browser-agent
+platform, visual diffing, load testing, monitoring, and grading pull requests
+with a model's opinion. See [WHY.md](WHY.md) for principles.
+
+**Who decides.** The maintainer and project lead is Rudra Kumar Pandey
+([@rudr19](https://github.com/rudr19)). Small changes: a pull request with
+passing checks and maintainer approval. Larger changes (new commands, file
+formats, anything touching the principles in [WHY.md](WHY.md)): open an issue
+with a short proposal first and leave it open at least 5 days; the maintainer
+decides if there is no agreement and writes down why. Committers may be added
+later and are listed in [CODEOWNERS](.github/CODEOWNERS).
+
+**Compatibility.** The proof file format and ledger JSON are public interfaces;
+breaking them needs a major version and a migration note. Until 1.0, minor
+versions may break APIs, and the [changelog](CHANGELOG.md) says how.
+
+**Releases.** Cut from `main` by the release workflow only, each npm version
+with a provenance attestation linking it to the commit and workflow run. Builds
+from anywhere else are not official releases. See [RELEASING.md](RELEASING.md).
 
 ## License
 
-Apache-2.0 for this package. Copyright © 2026 Rudra Kumar Pandey. "okproof" is a
-trademark of its author; see [TRADEMARK.md](TRADEMARK.md). Contributions need a
-signed CLA (see [CLA.md](CLA.md)). Official releases are published only by this
-repo's release workflow, with npm provenance.
+Apache-2.0 for this package. Copyright © 2026 Rudra Kumar Pandey and
+contributors. "okproof" is a trademark of its author; see
+[TRADEMARK.md](TRADEMARK.md). Contributions are made under the
+[CLA](CLA.md) and signed off under the DCO (see [CONTRIBUTING.md](CONTRIBUTING.md)).

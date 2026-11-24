@@ -6,7 +6,9 @@
 // indentation block reader (Python). Every pass over the text is linear.
 import { open, readdir } from 'node:fs/promises';
 import { join, resolve, relative, sep } from 'node:path';
-import { parseProof } from './proof.js';
+import { claimedCriteria, parseProof } from './proof.js';
+import type { TestOutcome } from './ledger.js';
+import { bodyWords, criterionKeywords, missingKeywords, removeTrivial, stripTags, topWords } from './relevance.js';
 
 export interface LintOptions {
   /** Project root: where test files are searched and where ".okproof" lives. Default ".". */
@@ -15,6 +17,8 @@ export interface LintOptions {
   tests?: string;
   /** Folder holding proof files. Default "<dir>/.okproof". */
   proofDir?: string;
+  /** Make "possibly unrelated" findings fail the run (result.ok false). Default false: advisory. */
+  strictRelevance?: boolean;
 }
 
 export interface LintFinding {
@@ -23,10 +27,27 @@ export interface LintFinding {
   ids: string[];
   /** The line holding the tag, trimmed. */
   title: string;
+  /** Why a test is weak: no assertion at all, or only trivial ones such as expect(true).toBe(true). */
+  reason?: 'none' | 'trivial';
+  /** The test's own title without its tags (the function name for Python). Used to match a runner's outcome. */
+  name?: string;
+}
+
+export interface RelevanceFinding {
+  file: string;
+  line: number;
+  id: string;
+  /** The test's own title, without the tag. */
+  test: string;
+  criterion: string;
+  /** Key words of the criterion the test body never mentions. */
+  missing: string[];
 }
 
 export interface LintResult {
   weak: LintFinding[];
+  /** Tagged tests whose body shares no key word with the criterion they claim. Advisory unless strictRelevance. */
+  unrelated: RelevanceFinding[];
   /** Tags naming a criterion that no proof file lists. One finding per tag. */
   dangling: LintFinding[];
   /** Criterion ids no tagged test claims. */
@@ -34,7 +55,7 @@ export interface LintResult {
   filesScanned: number;
   notes: string[];
   lines: string[];
-  /** True when there is no weak test and no dangling tag. */
+  /** True when there is no weak test and no dangling tag (and, with strictRelevance, no unrelated test). */
   ok: boolean;
 }
 
@@ -45,6 +66,8 @@ const MAX_TAGS_PER_FILE = 5000;
 /** A test body is scanned for at most this many characters. */
 const MAX_BODY_CHARS = 50_000;
 const PREFIX_WINDOW = 300;
+const MAX_LITS = 2000;
+const MAX_LIT_CHARS = 2000;
 const MAX_PY_BLOCK_LINES = 2000;
 
 const SKIP_DIRS = new Set(['node_modules', 'dist', '.git']);
@@ -59,12 +82,35 @@ const ASSERTION =
 // ---------------------------------------------------------------------------
 // Scanners
 
-/** Characters after which a "/" starts a regex literal rather than a division. */
+/**
+ * Characters after which a "/" starts a regex literal rather than a division.
+ * Also: the start of a line, and the keyword `return`. After an identifier, a
+ * number, ")" or "]" a "/" is a division.
+ */
 const REGEX_PREV = '(,=:[!&|?{};';
+/** A regex literal longer than this is not scanned: bounds the work of a "/" that never closes. */
+const MAX_REGEX_CHARS = 1000;
+
+const isIdentChar = (c: string | undefined): boolean => c !== undefined && /[\w$]/.test(c);
+
+/** True when the text just before `i` is the keyword `return` (a "/" after it starts a regex). */
+function afterReturn(src: string, i: number): boolean {
+  let k = i - 1;
+  const stop = Math.max(0, i - 64);
+  while (k >= stop && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n' || src[k] === '\r')) k--;
+  return k >= 5 && src.slice(k - 5, k + 1) === 'return' && !isIdentChar(src[k - 6]);
+}
+
+/** Text of a regex literal for the relevance check: escapes such as \b, \d, \w become spaces, so "\bhello\b" yields "hello". */
+function regexText(body: string): string {
+  return body.replace(/\\[a-zA-Z]/g, ' ');
+}
 
 interface Scan {
   /** The scanned text with strings, comments and regex literals blanked. */
   code: string;
+  /** Contents of the string and template literals met on the way (capped). */
+  lits: string[];
   /** Absolute index where the scan stopped. */
   end: number;
 }
@@ -79,10 +125,15 @@ export function scanBraces(src: string, from: number, tagIdx: number): Scan {
   const n = src.length;
   const limit = Math.min(n, from + MAX_BODY_CHARS);
   const parts: string[] = [];
+  const lits: string[] = [];
+  const lit = (a: number, b: number): void => {
+    if (lits.length < MAX_LITS) lits.push(src.slice(a, Math.min(b, a + MAX_LIT_CHARS)));
+  };
   let codeStart = from;
   let depth = 0;
   let floor: number | undefined;
   let last = '';
+  let lineStart = true;
   let i = from;
   const blank = (to: number): void => {
     parts.push(src.slice(codeStart, i), ' ');
@@ -99,11 +150,12 @@ export function scanBraces(src: string, from: number, tagIdx: number): Scan {
     } else if (c === '/' && next === '*') {
       const close = src.indexOf('*/', i + 2);
       blank(close === -1 ? n : close + 2);
-    } else if (c === '/' && (last === '' || REGEX_PREV.includes(last))) {
+    } else if (c === '/' && (lineStart || last === '' || REGEX_PREV.includes(last) || (isIdentChar(last) && afterReturn(src, i)))) {
       let j = i + 1;
       let inClass = false;
       let closed = false;
-      while (j < n && src[j] !== '\n') {
+      const cap = Math.min(n, i + MAX_REGEX_CHARS);
+      while (j < cap && src[j] !== '\n') {
         const d = src[j]!;
         if (d === '\\') j += 2;
         else {
@@ -117,22 +169,29 @@ export function scanBraces(src: string, from: number, tagIdx: number): Scan {
         }
       }
       if (closed) {
+        // A regex literal is text the test mentions, like a string.
+        if (lits.length < MAX_LITS) lits.push(regexText(src.slice(i + 1, Math.min(j, i + 1 + MAX_LIT_CHARS))));
         blank(j + 1);
         last = 'a';
       } else {
         last = c;
         i++;
       }
+      lineStart = false;
     } else if (c === '"' || c === "'") {
       let j = i + 1;
       while (j < n && src[j] !== c && src[j] !== '\n') j += src[j] === '\\' ? 2 : 1;
+      lit(i + 1, Math.min(j, n));
       blank(Math.min(n, src[j] === '\n' ? j : j + 1));
       last = 'a';
+      lineStart = false;
     } else if (c === '`') {
       let j = i + 1;
       while (j < n && src[j] !== '`') j += src[j] === '\\' ? 2 : 1;
+      lit(i + 1, Math.min(j, n));
       blank(Math.min(n, j + 1));
       last = 'a';
+      lineStart = false;
     } else {
       if (c === '(' || c === '{' || c === '[') depth++;
       else if (c === ')' || c === '}' || c === ']') {
@@ -142,17 +201,24 @@ export function scanBraces(src: string, from: number, tagIdx: number): Scan {
           break;
         }
       }
-      if (c !== ' ' && c !== '\t' && c !== '\n' && c !== '\r') last = c;
+      if (c === '\n') lineStart = true;
+      else if (c !== ' ' && c !== '\t' && c !== '\r') {
+        last = c;
+        lineStart = false;
+      }
       i++;
     }
   }
   const end = Math.min(i, n);
   parts.push(src.slice(codeStart, end));
-  return { code: parts.join(''), end };
+  return { code: parts.join(''), lits, end };
 }
 
 /** Blank Python strings (including triple-quoted) and # comments. */
-export function stripPython(src: string): string {
+export function stripPython(src: string, lits?: string[]): string {
+  const lit = (a: number, b: number): void => {
+    if (lits && lits.length < MAX_LITS) lits.push(src.slice(a, Math.min(b, a + MAX_LIT_CHARS)));
+  };
   const n = src.length;
   const parts: string[] = [];
   let codeStart = 0;
@@ -170,10 +236,12 @@ export function stripPython(src: string): string {
     } else if (c === '"' || c === "'") {
       if (src[i + 1] === c && src[i + 2] === c) {
         const close = src.indexOf(c.repeat(3), i + 3);
+        lit(i + 3, close === -1 ? n : close);
         blank(close === -1 ? n : close + 3);
       } else {
         let j = i + 1;
         while (j < n && src[j] !== c && src[j] !== '\n') j += src[j] === '\\' ? 2 : 1;
+        lit(i + 1, Math.min(j, n));
         blank(Math.min(n, src[j] === '\n' ? j : j + 1));
       }
     } else i++;
@@ -197,13 +265,18 @@ interface FoundTest {
   title: string;
   ids: string[];
   weak: boolean;
+  trivial: boolean;
+  /** The test's title or function name, without the tag. */
+  name: string;
+  /** Words (and stems) of the body, for the relevance check. */
+  words: Set<string>;
 }
 interface FileFindings {
   tests: FoundTest[];
   tags: { id: string; line: number; title: string }[];
 }
 
-const TAG_AT = /\[okproof:([\w-]+\.\d+)\]/y;
+const TAG_AT = /\[okproof:([\w-]+\.[a-z0-9-]+)\]/y;
 
 function lineAt(src: string, idx: number, cache: { pos: number; line: number; nl: number }): number {
   // Tags arrive in ascending order; each newline is found once (amortised linear).
@@ -258,7 +331,16 @@ export function analyzeSource(src: string, python: boolean): FileFindings {
         if (!existing.ids.includes(id)) existing.ids.push(id);
         continue;
       }
-      const t: FoundTest = { line, title: lineText(src, idx), ids: [id], weak: !ASSERTION.test(stripPython(pythonBlock(pyLines, defIdx))) };
+      const lits: string[] = [];
+      const code = stripPython(pythonBlock(pyLines, defIdx), lits);
+      const t: FoundTest = {
+        line,
+        title: lineText(src, idx),
+        ids: [id],
+        ...judge(code),
+        name: pyName(pyLines[defIdx]!),
+        words: bodyWords(code, lits.filter((l) => !l.includes('[okproof:'))),
+      };
       pyTestAtDef.set(defIdx, t);
       out.tests.push(t);
       continue;
@@ -273,10 +355,37 @@ export function analyzeSource(src: string, python: boolean): FileFindings {
     const from = idx - window.length + (nlInWindow === -1 ? 0 : nlInWindow + 1);
     const scan = scanBraces(src, from, idx);
     lastEnd = scan.end;
-    lastTest = { line, title: lineText(src, idx), ids: [id], weak: !ASSERTION.test(scan.code) };
+    const own = scan.lits.find((l) => l.includes('[okproof:'));
+    lastTest = {
+      line,
+      title: lineText(src, idx),
+      ids: [id],
+      ...judge(scan.code),
+      name: own === undefined ? '' : stripTags(own),
+      words: bodyWords(scan.code, scan.lits.filter((l) => !l.includes('[okproof:'))),
+    };
+    if (lastTest.name === '') lastTest.name = stripTags(lastTest.title);
     out.tests.push(lastTest);
   }
   return out;
+}
+
+/** Weak when nothing asserts, or when every assertion is trivial (expect(true).toBe(true)). */
+function judge(code: string): { weak: boolean; trivial: boolean } {
+  if (!ASSERTION.test(code)) return { weak: true, trivial: false };
+  const rest = removeTrivial(code);
+  if (rest !== code && !ASSERTION.test(rest)) return { weak: true, trivial: true };
+  return { weak: false, trivial: false };
+}
+
+function pyName(defLine: string): string {
+  const at = defLine.indexOf('def ');
+  if (at === -1) return defLine.trim();
+  let j = at + 4;
+  while (defLine[j] === ' ') j++;
+  let k = j;
+  while (k < defLine.length && defLine[k] !== '(' && defLine[k] !== ':' && defLine[k] !== ' ') k++;
+  return defLine.slice(j, k);
 }
 
 /** Index of the `def` line a tag on line `at` belongs to, if any. */
@@ -310,23 +419,58 @@ function pythonBlock(lines: string[], defIdx: number): string {
 // ---------------------------------------------------------------------------
 // File discovery
 
-function globToRegExp(glob: string): RegExp {
-  let re = '';
-  for (let i = 0; i < glob.length; i++) {
-    const c = glob[i]!;
-    if (c === '*' && glob[i + 1] === '*') {
-      if (glob[i + 2] === '/') {
-        re += '(?:.*/)?';
-        i += 2;
-      } else {
-        re += '.*';
-        i += 1;
-      }
-    } else if (c === '*') re += '[^/]*';
-    else if (c === '?') re += '[^/]';
-    else re += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+/** Longest glob accepted for --tests. */
+export const MAX_GLOB_CHARS = 512;
+
+/** One path segment against one pattern segment: "*" any run, "?" one character. Two pointers, no regex: O(n*m) at worst. */
+function segmentMatch(p: string, s: string): boolean {
+  let pi = 0;
+  let si = 0;
+  let star = -1;
+  let mark = 0;
+  while (si < s.length) {
+    if (pi < p.length && (p[pi] === '?' || p[pi] === s[si])) {
+      pi++;
+      si++;
+    } else if (pi < p.length && p[pi] === '*') {
+      star = pi++;
+      mark = si;
+    } else if (star !== -1) {
+      pi = star + 1;
+      si = ++mark;
+    } else return false;
   }
-  return new RegExp(`^${re}$`);
+  while (pi < p.length && p[pi] === '*') pi++;
+  return pi === p.length;
+}
+
+/**
+ * Match a "/"-separated relative path against a glob: "*" (not across "/"), "?",
+ * a "**" segment (any number of directories, including none), literal text.
+ * No regular expression is built from the pattern. Throws when the pattern is
+ * longer than MAX_GLOB_CHARS. Work is bounded by segments(pattern) * segments(path).
+ */
+export function globMatch(glob: string, path: string): boolean {
+  if (glob.length > MAX_GLOB_CHARS) throw new Error(`--tests pattern is longer than ${MAX_GLOB_CHARS} characters`);
+  const ps = glob.split('/');
+  const ss = path.split('/');
+  // row[j]: pattern segments consumed so far match the first j path segments
+  let row = new Array<boolean>(ss.length + 1).fill(false);
+  row[0] = true;
+  for (const p of ps) {
+    const next = new Array<boolean>(ss.length + 1).fill(false);
+    if (p === '**') {
+      let any = false;
+      for (let j = 0; j <= ss.length; j++) {
+        any = any || row[j]!;
+        next[j] = any;
+      }
+    } else {
+      for (let j = 1; j <= ss.length; j++) next[j] = row[j - 1]! && segmentMatch(p, ss[j - 1]!);
+    }
+    row = next;
+  }
+  return row[ss.length]!;
 }
 
 async function readCapped(path: string): Promise<string | undefined> {
@@ -344,7 +488,7 @@ interface Walk {
   truncated: boolean;
 }
 
-async function walk(base: string, root: string, filter: RegExp | undefined): Promise<Walk> {
+async function walk(base: string, root: string, filter: ((rel: string) => boolean) | undefined): Promise<Walk> {
   const files: string[] = [];
   const stack = [base];
   let visited = 0;
@@ -370,7 +514,7 @@ async function walk(base: string, root: string, filter: RegExp | undefined): Pro
         const rel = relative(root, full).split(sep).join('/');
         const ext = e.name.slice(e.name.lastIndexOf('.') + 1);
         if (!SOURCE_EXT.has(ext) || !TEST_NAME.test(rel)) continue;
-        if (filter && !filter.test(rel)) continue;
+        if (filter && !filter(rel)) continue;
         if (files.length >= MAX_FILES) {
           truncated = true;
           break;
@@ -409,7 +553,7 @@ export async function lintTests(options: LintOptions = {}): Promise<LintResult> 
   const root = resolve(options.dir ?? '.');
   const notes: string[] = [];
   let base = root;
-  let filter: RegExp | undefined;
+  let filter: ((rel: string) => boolean) | undefined;
   let single: string | undefined;
   if (options.tests !== undefined && options.tests !== '') {
     const spec = options.tests.split(sep).join('/').replace(/^\.\//, '');
@@ -417,7 +561,8 @@ export async function lintTests(options: LintOptions = {}): Promise<LintResult> 
       const segs = spec.split('/');
       const firstGlob = segs.findIndex((s) => /[*?]/.test(s));
       base = resolve(root, segs.slice(0, firstGlob).join('/'));
-      filter = globToRegExp(spec);
+      if (spec.length > MAX_GLOB_CHARS) throw new Error(`--tests pattern is longer than ${MAX_GLOB_CHARS} characters`);
+      filter = (rel) => globMatch(spec, rel);
     } else {
       base = resolve(root, spec);
       const fh = await open(base, 'r').catch(() => undefined);
@@ -438,7 +583,11 @@ export async function lintTests(options: LintOptions = {}): Promise<LintResult> 
     if (w.truncated) notes.push(`scan stopped early: more than ${MAX_FILES} test files or ${MAX_ENTRIES} entries`);
   }
 
+  const criteria = await loadCriteria(options.proofDir ? resolve(root, options.proofDir) : join(root, '.okproof'));
+  const textOf = new Map<string, string>();
+  for (const c of criteria ?? []) if (!textOf.has(c.id)) textOf.set(c.id, c.text);
   const weak: LintFinding[] = [];
+  const unrelated: RelevanceFinding[] = [];
   const dangling: LintFinding[] = [];
   const seenIds = new Set<string>();
   const pending: { file: string; tags: FileFindings['tags'] }[] = [];
@@ -457,12 +606,24 @@ export async function lintTests(options: LintOptions = {}): Promise<LintResult> 
     }
     scanned++;
     const found = analyzeSource(src, f.endsWith('.py'));
-    for (const t of found.tests) if (t.weak) weak.push({ file: rel, line: t.line, ids: t.ids, title: t.title });
+    for (const t of found.tests) {
+      if (t.weak) weak.push({ file: rel, line: t.line, ids: t.ids, title: t.title, reason: t.trivial ? 'trivial' : 'none', name: t.name });
+      // A test with no assertions is already reported weak; relevance is about the rest.
+      if (t.weak && !t.trivial) continue;
+      for (const id of t.ids) {
+        const text = textOf.get(id);
+        if (text === undefined) continue;
+        const keys = criterionKeywords(text);
+        if (keys.length === 0) continue; // nothing to compare: all stopwords
+        if (missingKeywords(keys, t.words).length === keys.length) {
+          unrelated.push({ file: rel, line: t.line, id, test: t.name, criterion: text, missing: topWords(keys) });
+        }
+      }
+    }
     for (const t of found.tags) seenIds.add(t.id);
     pending.push({ file: rel, tags: found.tags });
   }
 
-  const criteria = await loadCriteria(options.proofDir ? resolve(root, options.proofDir) : join(root, '.okproof'));
   const untested: LintResult['untested'] = [];
   if (!criteria || criteria.length === 0) {
     notes.push('no proof files found: skipped the dangling-tag and untested-criterion checks');
@@ -475,13 +636,86 @@ export async function lintTests(options: LintOptions = {}): Promise<LintResult> 
   }
 
   const lines: string[] = [];
-  for (const w of weak) lines.push(`WEAK      ${w.file}:${w.line}  [okproof:${w.ids.join(', ')}] no assertion in test body: ${w.title}`);
+  for (const w of weak) {
+    const why = w.reason === 'trivial' ? 'only trivial assertions (such as expect(true).toBe(true)) in test body' : 'no assertion in test body';
+    lines.push(`WEAK      ${w.file}:${w.line}  [okproof:${w.ids.join(', ')}] ${why}: ${w.title}`);
+  }
+  for (const u of unrelated) {
+    const text = u.criterion.length > 100 ? `${u.criterion.slice(0, 97)}...` : u.criterion;
+    lines.push(`UNRELATED ${u.file}:${u.line}  possibly unrelated: test '${u.test}' claims ${u.id} ('${text}') but never mentions ${u.missing.join(', ')}`);
+  }
   for (const d of dangling) lines.push(`DANGLING  ${d.file}:${d.line}  [okproof:${d.ids[0]}] no such criterion in any proof file`);
   for (const u of untested) lines.push(`UNTESTED  ${u.id}  ${u.text}: no tagged test`);
   for (const n of notes) lines.push(`note: ${n}`);
-  const ok = weak.length === 0 && dangling.length === 0;
+  const strictRelevance = options.strictRelevance === true;
+  const ok = weak.length === 0 && dangling.length === 0 && (!strictRelevance || unrelated.length === 0);
   lines.push(
-    `okproof lint: ${scanned} test file${scanned === 1 ? '' : 's'} scanned, ${weak.length} weak, ${dangling.length} dangling tag${dangling.length === 1 ? '' : 's'}, ${untested.length} untested criteri${untested.length === 1 ? 'on' : 'a'}`,
+    `okproof lint: ${scanned} test file${scanned === 1 ? '' : 's'} scanned, ${weak.length} weak, ${unrelated.length} possibly unrelated${strictRelevance ? '' : ' (advisory)'}, ${dangling.length} dangling tag${dangling.length === 1 ? '' : 's'}, ${untested.length} untested criteri${untested.length === 1 ? 'on' : 'a'}`,
   );
-  return { weak, dangling, untested, filesScanned: scanned, notes, lines, ok };
+  return { weak, unrelated, dangling, untested, filesScanned: scanned, notes, lines, ok };
+}
+
+// ---------------------------------------------------------------------------
+// Feeding lint into the ledger
+
+const norm = (s: string): string => stripTags(s).toLowerCase();
+
+/**
+ * Mark the outcomes lint found weak as having asserted nothing (assertions = 0),
+ * so their criterion becomes "unproven" instead of "met". Matched by the
+ * [okproof:<id>] tag plus the test title: the outcome must claim one of the
+ * finding's ids and its title (tags removed) must contain the finding's test
+ * name, or the other way round. A runner's own assertion count is the authority:
+ * a count above zero stands, except for a test lint calls trivial. Returns new
+ * outcomes; the input is not changed.
+ */
+export function applyLintToOutcomes(outcomes: TestOutcome[], weak: LintFinding[]): { outcomes: TestOutcome[]; marked: string[] } {
+  const marked: string[] = [];
+  const result = outcomes.map((o) => {
+    const ids = claimedCriteria(o.title);
+    if (ids.length === 0) return o;
+    const title = norm(o.title);
+    const hit = weak.find((f) => {
+      if (!f.ids.some((id) => ids.includes(id))) return false;
+      const name = f.name === undefined ? '' : norm(f.name);
+      return name === '' || title.includes(name) || (title !== '' && name.includes(title));
+    });
+    if (!hit) return o;
+    if (o.assertions !== undefined && !(hit.reason === 'trivial' && o.assertions > 0)) return o;
+    marked.push(o.title);
+    return { ...o, assertions: 0 };
+  });
+  return { outcomes: result, marked };
+}
+
+export interface LintOutcomesOptions {
+  /** Project root to scan for test files. Default ".". */
+  dir?: string;
+  /** Limit the scan to a path or glob. Default: every test file under dir. */
+  tests?: string;
+  /** Folder holding proof files. */
+  proofDir?: string;
+  strictRelevance?: boolean;
+}
+
+export interface LintOutcomesResult {
+  outcomes: TestOutcome[];
+  /** Titles of outcomes marked weak by lint. */
+  marked: string[];
+  lint: LintResult;
+  /** Human lines: one per marked test, plus advisory relevance warnings. */
+  lines: string[];
+  /** False only with strictRelevance and an unrelated test. */
+  ok: boolean;
+}
+
+/** Run lint and apply its weak findings to `outcomes`. Relevance stays advisory unless strictRelevance. */
+export async function lintOutcomes(outcomes: TestOutcome[], options: LintOutcomesOptions = {}): Promise<LintOutcomesResult> {
+  const lint = await lintTests({ dir: options.dir, tests: options.tests, proofDir: options.proofDir, strictRelevance: options.strictRelevance });
+  const applied = applyLintToOutcomes(outcomes, lint.weak);
+  const lines: string[] = [];
+  for (const m of applied.marked) lines.push(`okproof lint: marked weak (no real assertion): ${m}`);
+  for (const u of lint.unrelated) lines.push(`okproof lint: possibly unrelated: test '${u.test}' claims ${u.id} but never mentions ${u.missing.join(', ')}`);
+  const ok = options.strictRelevance !== true || lint.unrelated.length === 0;
+  return { outcomes: applied.outcomes, marked: applied.marked, lint, lines, ok };
 }

@@ -7,6 +7,7 @@ import { parseJUnit } from '../junit.js';
 import { finalize } from '../finalize.js';
 import { lintTests } from '../lint.js';
 import type { Ledger, LedgerEntry, Verdict } from '../ledger.js';
+import { evaluateGate, staleness } from '../gate.js';
 
 export interface ToolContext {
   cwd: string;
@@ -190,6 +191,8 @@ const okproof_status: ToolDefinition = {
     const proofs = await loadProofs(abs, shown, issue);
     if (proofs.length === 0) return `Not done: no proof files in ${shown}, so nothing is proven. Add criteria with okproof_add_criterion.`;
 
+    // The verdict is the same function `okproof gate` runs; the rows below are detail.
+    const gate = await evaluateGate(abs, { issue });
     const warnings: string[] = [];
     const body: string[] = [];
     const next: string[] = [];
@@ -203,7 +206,12 @@ const okproof_status: ToolDefinition = {
         warnings.push(`${shown}/${p.file} cannot be read: ${p.error}`);
         continue;
       }
-      const { ledger, mtimeMs } = await readLedger(abs, p.proof.issue, warnings);
+      let { ledger, mtimeMs } = await readLedger(abs, p.proof.issue, warnings);
+      const stale = ledger ? staleness(p.proof, ledger) : undefined;
+      if (stale) {
+        warnings.push(stale);
+        ledger = undefined; // a stale ledger proves nothing
+      }
       if (ledger && mtimeMs !== undefined && p.mtimeMs > mtimeMs) {
         warnings.push(
           `#${p.proof.issue}: ${shown}/${p.file} is newer than its ledger, so the ledger may be out of date. Re-run the tests with the okproof reporter or \`okproof ingest\`.`,
@@ -231,10 +239,15 @@ const okproof_status: ToolDefinition = {
       body.push('');
     }
 
-    const done = total > 0 && met === total && broken === 0;
+    const done = total > 0 && met === total && broken === 0 && gate.ok;
     const head = done
       ? 'Done: every criterion proven.'
-      : `Not done: ${met} of ${total} criteria proven${broken ? ` (${broken} proof file${broken > 1 ? 's' : ''} unreadable)` : ''}.`;
+      : met === total && total > 0 && broken === 0
+        ? `Not done: ${met} of ${total} criteria proven, but okproof gate fails (see below).`
+        : `Not done: ${met} of ${total} criteria proven${broken ? ` (${broken} proof file${broken > 1 ? 's' : ''} unreadable)` : ''}.`;
+    for (const problem of gate.problems) {
+      if (!problem.includes(' criterion ') && !warnings.includes(problem)) warnings.push(problem);
+    }
     const out = [head, '', ...body];
     if (warnings.length) out.push('Warnings:', ...warnings.map((w) => `- ${w}`), '');
     if (next.length) out.push('Next steps:', ...next.map((n) => `- ${n}`));
@@ -320,7 +333,8 @@ const okproof_add_criterion: ToolDefinition = {
       const sep = existing === '' || existing.endsWith('\n') ? '' : '\n';
       await writeFile(path, `${existing}${sep}- [ ] ${text}\n`);
     }
-    const id = `${issue}.${index}`;
+    const added = parseProof(await readFile(path, 'utf8')).criteria.at(-1);
+    const id = added?.id ?? `${issue}.${index}`;
     return `Added criterion ${id} to ${shown}/${issue}.md. Tag its test: [okproof:${id}]`;
   },
 };
@@ -328,13 +342,15 @@ const okproof_add_criterion: ToolDefinition = {
 const okproof_lint: ToolDefinition = {
   name: 'okproof_lint',
   description:
-    'Static check for weak tests: finds tests tagged [okproof:<id>] whose body has no assertion, tags that name a criterion no proof file lists, ' +
+    'Static check for weak and unrelated tests: finds tests tagged [okproof:<id>] whose body has no assertion or only trivial ones (expect(true).toBe(true)), ' +
+    'tests whose body never mentions any key word of the criterion they claim (reported as "possibly unrelated", advisory), tags that name a criterion no proof file lists, ' +
     'and criteria no tagged test claims. A tag is a claim; an assertion is evidence. Heuristic, never runs your tests. Paths must stay inside the working directory.',
   inputSchema: {
     type: 'object',
     properties: {
       dir: { type: 'string', description: 'Project root to scan, relative to the working directory. Default ".". Proof files are read from <dir>/.okproof.' },
-      tests: { type: 'string', description: 'Limit the scan to this directory, file or simple glob (relative to dir), e.g. "e2e" or "e2e/**/*.spec.ts".' },
+      tests: { type: 'string', description: 'Limit the scan to this directory, file or simple glob (relative to dir), e.g. "tests/ui" or "tests/**/*.spec.ts".' },
+      strictRelevance: { type: 'boolean', description: 'Treat "possibly unrelated" findings as failures. Default false (advisory).' },
     },
     additionalProperties: false,
   },
@@ -344,11 +360,16 @@ const okproof_lint: ToolDefinition = {
     if (tests !== undefined) resolveInside(dir, tests.replace(/[*?].*$/, ''), 'tests');
     let result;
     try {
-      result = await lintTests({ dir, tests });
+      result = await lintTests({ dir, tests, strictRelevance: args.strictRelevance === true });
     } catch (e) {
       throw new ToolFailure((e as Error).message);
     }
-    return [result.ok ? 'Lint passed: no weak tests or dangling tags.' : 'Lint failed: fix the items below.', '', ...result.lines].join('\n');
+    const head = !result.ok
+      ? 'Lint failed: fix the items below.'
+      : result.unrelated.length > 0
+        ? `Lint passed with ${result.unrelated.length} possibly-unrelated warning${result.unrelated.length === 1 ? '' : 's'}: check that those tests really exercise their criterion.`
+        : 'Lint passed: no weak or unrelated tests, no dangling tags.';
+    return [head, '', ...result.lines].join('\n');
   },
 };
 
