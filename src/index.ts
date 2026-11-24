@@ -1,12 +1,14 @@
 export { parseProof, claimedCriteria, type Criterion, type ProofFile } from './proof.js';
-export { buildLedger, renderLedgerMarkdown, type Ledger, type LedgerEntry, type Verdict, type TestOutcome } from './ledger.js';
+export { buildLedger, renderLedgerMarkdown, isWeak, verdictLabel, type LedgerOptions, type Ledger, type LedgerEntry, type Verdict, type TestOutcome } from './ledger.js';
 export { finalize, type FinalizeOptions, type FinalizeResult } from './finalize.js';
+export { lintTests, type LintOptions, type LintResult, type LintFinding } from './lint.js';
 export { parseJUnit } from './junit.js';
 export { parseCTRF } from './ctrf.js';
-export { default as OkaydPlaywrightReporter } from './playwright.js';
+export { default as OkproofPlaywrightReporter } from './playwright.js';
 export { publishToGitHub, renderComment, pullRequestNumber, COMMENT_MARKER, type GitHubEnv, type PublishResult } from './github.js';
 export * from './driver/index.js';
 export * from './verify/index.js';
 export { startMcpServer } from './mcp/server.js';
 export { createProtocol, type Protocol, type ProtocolOptions } from './mcp/protocol.js';
 export { tools as mcpTools, runTool, type ToolDefinition, type ToolContext, type ToolResult } from './mcp/tools.js';
+export { proofFromIssue, syncProofFile, fetchIssue, linkedIssues, issueCriteria, type SyncResult, type SyncOptions, type FetchedIssue } from './sync.js';

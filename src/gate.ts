@@ -19,7 +19,7 @@ export interface GateResult {
   notes: string[];
 }
 
-const RERUN = 'Re-run your tests (or okayd ingest) to rebuild the ledger.';
+const RERUN = 'Re-run your tests (or okproof ingest) to rebuild the ledger.';
 
 /** Why a ledger no longer describes its proof file, or undefined if it still does. */
 export function staleness(proof: ProofFile, ledger: Ledger): string | undefined {
@@ -54,7 +54,7 @@ export async function evaluateGate(dir: string, options: GateOptions = {}): Prom
     if (options.allowEmpty) return { ok: true, problems, notes: [`No proof files in ${dir}; nothing to prove (--allow-empty).`] };
     return {
       ok: false,
-      problems: [`No proof files in ${dir}, so there is nothing to prove. Add .okayd/<issue>.md with the acceptance criteria, or pass --allow-empty if this change has none.`],
+      problems: [`No proof files in ${dir}, so there is nothing to prove. Add .okproof/<issue>.md with the acceptance criteria, or pass --allow-empty if this change has none.`],
       notes,
     };
   }
@@ -81,7 +81,7 @@ export async function evaluateGate(dir: string, options: GateOptions = {}): Prom
       const missing = (e as NodeJS.ErrnoException).code === 'ENOENT';
       problems.push(
         missing
-          ? `#${proof.issue} has no ledger. Run your tests with the Okayd reporter, or run okayd ingest, first.`
+          ? `#${proof.issue} has no ledger. Run your tests with the okproof reporter, or run okproof ingest, first.`
           : `#${proof.issue}: ledger-${proof.issue}.json is not valid JSON. ${RERUN}`,
       );
       continue;
@@ -96,7 +96,14 @@ export async function evaluateGate(dir: string, options: GateOptions = {}): Prom
     const entries = new Map(ledger.entries.map((e) => [e.id, e]));
     const unmet = proof.criteria.filter((c) => entries.get(c.id)?.verdict !== 'met');
     if (unmet.length > 0) {
-      for (const c of unmet) problems.push(`#${proof.issue} criterion ${c.id} is ${entries.get(c.id)?.verdict ?? 'untested'}: ${c.text}`);
+      for (const c of unmet) {
+        const e = entries.get(c.id) as { verdict?: string; weak?: string[] } | undefined;
+        if (e?.verdict === 'unproven') {
+          problems.push(`#${proof.issue} criterion ${c.id} is UNPROVEN (no assertions): add a real assertion to ${(e.weak ?? []).join(', ') || 'its tagged tests'}. ${c.text}`);
+        } else {
+          problems.push(`#${proof.issue} criterion ${c.id} is ${e?.verdict ?? 'untested'}: ${c.text}`);
+        }
+      }
     } else {
       notes.push(`#${proof.issue}: ${proof.criteria.length}/${proof.criteria.length} criteria met`);
     }
