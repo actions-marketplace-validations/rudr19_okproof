@@ -48,7 +48,7 @@ const MARK: Record<Verdict, string> = { met: 'met', failed: 'FAILED', untested: 
 export function renderLedgerMarkdown(ledger: Ledger): string {
   const met = ledger.entries.filter((e) => e.verdict === 'met').length;
   const lines = [
-    `### Probato · #${ledger.issue} ${ledger.title}`,
+    `### Okayd · #${ledger.issue} ${ledger.title}`,
     '',
     `${ledger.proven ? 'Proven' : 'Not proven'}: ${met} of ${ledger.entries.length} criteria met.`,
     '',

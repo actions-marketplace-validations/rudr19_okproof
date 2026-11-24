@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in Probato doesn't work as documented
+description: Something in Okayd doesn't work as documented
 labels: [bug]
 body:
   - type: textarea
@@ -19,6 +19,6 @@ body:
     id: versions
     attributes:
       label: Versions
-      placeholder: "probato 0.0.1, e2e 0.24.0, Node 22"
+      placeholder: "okayd 0.0.1, e2e 0.24.0, Node 22"
     validations:
       required: true

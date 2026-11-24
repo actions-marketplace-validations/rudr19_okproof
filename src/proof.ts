@@ -1,11 +1,11 @@
-// Parses a proof file: .probato/<issue>.md
+// Parses a proof file: .okayd/<issue>.md
 //
 //   ## #142 Pro upgrade
 //   - [ ] A member can upgrade the workspace to Pro from Billing
 //   - [ ] Invoice preview shows a prorated amount
 //
 // Each "- [ ]" line is one acceptance criterion with id "<issue>.<n>", e.g. "142.1".
-// A test claims a criterion by putting "[probato:142.1]" in its title.
+// A test claims a criterion by putting "[okayd:142.1]" in its title.
 
 export interface Criterion {
   id: string;
@@ -46,9 +46,9 @@ export function parseProof(source: string): ProofFile {
   return { issue, title, criteria };
 }
 
-const TAG = /\[probato:([\w-]+\.\d+)\]/g;
+const TAG = /\[okayd:([\w-]+\.\d+)\]/g;
 
-/** Criterion ids a test title claims, e.g. "upgrade works [probato:142.1]". */
+/** Criterion ids a test title claims, e.g. "upgrade works [okayd:142.1]". */
 export function claimedCriteria(testTitle: string): string[] {
   return [...testTitle.matchAll(TAG)].map((m) => m[1]);
 }

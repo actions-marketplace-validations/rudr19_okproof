@@ -2,13 +2,13 @@
 
 ## Supported versions
 
-Probato is pre-1.0. Only the latest release gets security fixes.
+Okayd is pre-1.0. Only the latest release gets security fixes.
 
 ## Reporting a vulnerability
 
 Please report privately through GitHub:
 **Security → Report a vulnerability** on
-[rudr19/probato](https://github.com/rudr19/probato/security/advisories/new).
+[rudr19/okayd](https://github.com/rudr19/okayd/security/advisories/new).
 
 Don't open a public issue for a security problem.
 
@@ -18,7 +18,7 @@ anonymous.
 
 ## Scope
 
-Probato reads proof files and test results, and writes ledgers. Reports we
+Okayd reads proof files and test results, and writes ledgers. Reports we
 especially want:
 
 - A way to make a ledger say "proven" when a criterion did not pass

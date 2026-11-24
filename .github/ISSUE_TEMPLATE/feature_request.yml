@@ -1,12 +1,12 @@
 name: Feature request
-description: Suggest an idea for Probato
+description: Suggest an idea for Okayd
 labels: [enhancement]
 body:
   - type: textarea
     id: problem
     attributes:
       label: The problem
-      description: What are you trying to prove that Probato can't do today?
+      description: What are you trying to prove that Okayd can't do today?
     validations:
       required: true
   - type: textarea

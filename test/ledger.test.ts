@@ -21,14 +21,14 @@ test('rejects a proof file without a heading or criteria', () => {
 });
 
 test('reads claimed criteria from test titles', () => {
-  assert.deepEqual(claimedCriteria('upgrade [probato:142.1] [probato:142.2]'), ['142.1', '142.2']);
+  assert.deepEqual(claimedCriteria('upgrade [okayd:142.1] [okayd:142.2]'), ['142.1', '142.2']);
   assert.deepEqual(claimedCriteria('no tag here'), []);
 });
 
 test('untested and flaky never count as proven', () => {
   const ledger = buildLedger(parseProof(SOURCE), [
-    { title: 'upgrade [probato:142.1]', status: 'passed', evidence: 'traces/1.zip' },
-    { title: 'preview [probato:142.2]', status: 'flaky' },
+    { title: 'upgrade [okayd:142.1]', status: 'passed', evidence: 'traces/1.zip' },
+    { title: 'preview [okayd:142.2]', status: 'flaky' },
   ]);
   assert.deepEqual(ledger.entries.map((e) => e.verdict), ['met', 'failed', 'untested']);
   assert.equal(ledger.proven, false);
@@ -37,8 +37,8 @@ test('untested and flaky never count as proven', () => {
 
 test('every criterion passing proves the issue', () => {
   const ledger = buildLedger(parseProof(SOURCE), [
-    { title: 'a [probato:142.1]', status: 'passed' },
-    { title: 'b [probato:142.2] [probato:142.3]', status: 'passed' },
+    { title: 'a [okayd:142.1]', status: 'passed' },
+    { title: 'b [okayd:142.2] [okayd:142.3]', status: 'passed' },
   ]);
   assert.equal(ledger.proven, true);
 });

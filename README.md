@@ -1,18 +1,18 @@
-# Probato
+# Okayd
 
-**Your agent says it's done. Probato proves it, criterion by criterion.**
+**Your agent says it's done. Okayd proves it, criterion by criterion.**
 
-Probato checks a pull request against the acceptance criteria in its issue.
+Okayd checks a pull request against the acceptance criteria in its issue.
 The criteria go in a proof file in the repo. Tests claim criteria by tag. The
 run ends with a ledger that marks each criterion **met**, **failed** or
 **untested**. Untested never counts as a pass, and neither does a flaky pass.
 
-Probato is a plugin for the [e2e](https://github.com/e2e-inc/e2e) test
+Okayd is a plugin for the [e2e](https://github.com/e2e-inc/e2e) test
 runner. It doesn't replace the runner.
 
 ## 1. Write a proof file
 
-`.probato/142.md`:
+`.okayd/142.md`:
 
 ```md
 ## #142 Pro upgrade
@@ -21,12 +21,12 @@ runner. It doesn't replace the runner.
 - [ ] A viewer (non-admin) cannot see the upgrade button
 ```
 
-Run `npx probato check` to print the tag for each criterion.
+Run `npx okayd check` to print the tag for each criterion.
 
 ## 2. Claim criteria in tests
 
 ```ts
-test('member upgrades to Pro [probato:142.1] [probato:142.2]', async ({ app, agent }) => {
+test('member upgrades to Pro [okayd:142.1] [okayd:142.2]', async ({ app, agent }) => {
   // ...
 });
 ```
@@ -35,16 +35,16 @@ test('member upgrades to Pro [probato:142.1] [probato:142.2]', async ({ app, age
 
 ```ts
 // e2e.config.ts
-import { probato } from '@probato/e2e';
+import { okayd } from 'okayd';
 
 export default {
   // ...
-  reporters: ['list', probato()],
+  reporters: ['list', okayd()],
 };
 ```
 
-Each run writes `.probato/ledger-<issue>.json` and `.md`.
-`npx probato gate` exits 1 unless every criterion is met. Use it as a required
+Each run writes `.okayd/ledger-<issue>.json` and `.md`.
+`npx okayd gate` exits 1 unless every criterion is met. Use it as a required
 CI check.
 
 ## Roadmap
@@ -57,5 +57,5 @@ CI check.
 
 ## License
 
-Apache-2.0 for this package. Copyright © 2026 Rudra Kumar Pandey. "Probato" is a
+Apache-2.0 for this package. Copyright © 2026 Rudra Kumar Pandey. "Okayd" is a
 trademark of its author. Contributions need a signed CLA (see `CLA.md`).

@@ -6,8 +6,8 @@ import { join } from 'node:path';
 import { parseProof } from './proof.js';
 import { buildLedger, renderLedgerMarkdown, type TestOutcome } from './ledger.js';
 
-export interface ProbatoOptions {
-  /** Folder holding proof files. Default ".probato". */
+export interface OkaydOptions {
+  /** Folder holding proof files. Default ".okayd". */
   dir?: string;
   /** Only check this issue's proof file. Default: every proof file in dir. */
   issue?: string;
@@ -18,11 +18,11 @@ interface RunEvent {
   result?: { test?: { title?: string }; status?: string; tracePath?: string };
 }
 
-export function probato(options: ProbatoOptions = {}) {
-  const dir = options.dir ?? '.probato';
+export function okayd(options: OkaydOptions = {}) {
+  const dir = options.dir ?? '.okayd';
   const outcomes: TestOutcome[] = [];
   return {
-    name: 'probato',
+    name: 'okayd',
     onEvent(event: RunEvent) {
       if (event.type !== 'test-finished' || !event.result?.test?.title) return;
       outcomes.push({
@@ -41,7 +41,7 @@ export function probato(options: ProbatoOptions = {}) {
         await writeFile(join(dir, `ledger-${ledger.issue}.json`), JSON.stringify(ledger, null, 2));
         await writeFile(join(dir, `ledger-${ledger.issue}.md`), renderLedgerMarkdown(ledger));
         const met = ledger.entries.filter((e) => e.verdict === 'met').length;
-        rows.push(`probato #${ledger.issue}: ${met}/${ledger.entries.length} criteria met${ledger.proven ? '' : ' (not proven)'}`);
+        rows.push(`okayd #${ledger.issue}: ${met}/${ledger.entries.length} criteria met${ledger.proven ? '' : ' (not proven)'}`);
       }
       return { rows };
     },

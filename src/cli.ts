@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// probato check [dir]  validates proof files and prints the tag for each criterion.
-// probato gate  [dir]  exits 1 when any written ledger is not proven (a merge gate).
+// okayd check [dir]  validates proof files and prints the tag for each criterion.
+// okayd gate  [dir]  exits 1 when any written ledger is not proven (a merge gate).
 import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseProof } from './proof.js';
 
-const [cmd = 'check', dir = '.probato'] = process.argv.slice(2);
+const [cmd = 'check', dir = '.okayd'] = process.argv.slice(2);
 
 async function main(): Promise<number> {
   const names = await readdir(dir);
@@ -13,14 +13,14 @@ async function main(): Promise<number> {
     for (const f of names.filter((n) => n.endsWith('.md') && !n.startsWith('ledger-'))) {
       const proof = parseProof(await readFile(join(dir, f), 'utf8'));
       console.log(`#${proof.issue} ${proof.title}`);
-      for (const c of proof.criteria) console.log(`  [probato:${c.id}] ${c.text}`);
+      for (const c of proof.criteria) console.log(`  [okayd:${c.id}] ${c.text}`);
     }
     return 0;
   }
   if (cmd === 'gate') {
     const ledgers = names.filter((n) => n.startsWith('ledger-') && n.endsWith('.json'));
     if (ledgers.length === 0) {
-      console.error('No ledgers found. Run the suite with the probato() reporter first.');
+      console.error('No ledgers found. Run the suite with the okayd() reporter first.');
       return 1;
     }
     let ok = true;
@@ -33,7 +33,7 @@ async function main(): Promise<number> {
     }
     return ok ? 0 : 1;
   }
-  console.error(`Unknown command "${cmd}". Use: probato check | probato gate`);
+  console.error(`Unknown command "${cmd}". Use: okayd check | okayd gate`);
   return 2;
 }
 
